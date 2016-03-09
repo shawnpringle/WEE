@@ -172,7 +172,9 @@ global constant
   KEYWORD = 315,
   WITH = 316,
   WITHOUT = 317,
-  SYNTAX_ERROR = 318 -- {SYNTAX_ERROR, pos, len, "message"}
+  SYNTAX_ERROR = 318, -- {SYNTAX_ERROR, pos, len, "message"}
+  LOOP = 319, -- {LOOP, expr, scope-start, scope-end, stmts...}
+  UNTIL = 320
 
 -- keep a copy of parsed files, reparsing if timestamp changes
 sequence cache -- { {"path", timestamp, stmts...} ...}
@@ -212,7 +214,7 @@ map:map lookup_table = map:new_from_kvpairs({
   {"switch", SWITCH}, {"case", CASE}, {"break", BREAK}, 
   {"continue", CONTINUE}, {"as", KEYWORD}, {"enum", ENUM_DECL},
   {"default", DEFAULT}, {"entry", ENTRY}, {"retry", RETRY}, {"label", LABEL},
-  {"goto", GOTO}, {"routine", KEYWORD}, {"fallthru", KEYWORD}, {"`", '`'}
+  {"goto", GOTO}, {"routine", KEYWORD}, {"fallthru", KEYWORD}, {"`", '`'}, {"loop", LOOP},{"until", UNTIL}
 },{}))
 
 -- returns text from file, else -1
@@ -346,6 +348,10 @@ procedure declare_ast(sequence ast, integer start_idx, integer scope_end, intege
       
     elsif decl = WHILE then
       -- {WHILE, expr, scope-start, scope-end, stmts...}
+      declare_ast(s, n+5, s[n+4])
+      
+    elsif decl = LOOP then
+      -- {LOOP, expr, scope-start, scope-end, stmts... }
       declare_ast(s, n+5, s[n+4])
       
     elsif decl = IF then
@@ -1426,7 +1432,7 @@ function statements(integer mode, integer flags)
         if mode != NONE then
           exit
         end if
-
+        
       case "global" then
         prefix = GLOBAL
         prefix_idx = tok_idx
@@ -1437,7 +1443,20 @@ function statements(integer mode, integer flags)
         prefix = EXPORT
         prefix_idx = tok_idx
       
-      case "while" then          
+      case "until" then
+        if mode = LOOP then
+          exit
+        end if
+        
+       case "loop" then
+       expect("do")
+        s = {LOOP, 0}
+        s &= statements(LOOP, or_bits(flags, LOOP_FLAG))
+        s[2] = expr(1)
+        expect("end")
+        expect("loop")
+        
+        case "while" then          
         s = {WHILE, expr(1)}
         if OE4 and token("with") then
           expect("entry")
@@ -2150,7 +2169,7 @@ function get_decls(sequence ast, integer pos, sequence name_space, integer filte
         result &= get_decls(s[7..$], pos, name_space, filter)
       end if
 
-    elsif decl = WHILE then
+    elsif decl = WHILE or decl = LOOP then
       -- {WHILE, expr, scope-start, scope-end, stmts...}
       if length(s) >= 4 and pos >= s[3] and pos <= s[4] then -- in scope?
         result &= get_decls(s[3..$], pos, name_space, filter)
@@ -2397,7 +2416,7 @@ function decl_kind(sequence ast, integer start_idx, integer pos)
         end if
       end for
       
-    elsif decl = WHILE then
+    elsif decl = WHILE or decl = LOOP then
       -- {WHILE, expr, scope-start, scope-end, stmts...}
       if pos >= s[3] and pos <= s[4] then
         decl = decl_kind(s, 5, pos)
@@ -2805,7 +2824,7 @@ procedure check_ast(sequence ast, integer start_idx)
         check_expr(s[i][4])
       end for
       
-    elsif decl = WHILE then
+    elsif decl = WHILE or decl = LOOP then
       -- {WHILE, expr, scope-start, scope-end, stmts...}
       check_expr(s[n+2])
       check_ast(s, n+5)
