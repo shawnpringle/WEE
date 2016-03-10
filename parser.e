@@ -1392,8 +1392,9 @@ constant
   PROC_FLAG = 1, -- return is allowed
   FUNC_FLAG = 2, -- return with expr is allowed
   LOOP_FLAG = 4, -- exit is allowed
-  CASE_FLAG = 8  -- case statement allowed
-
+  CASE_FLAG = 8,  -- case statement allowed
+  UNTIL_FLAG = 16 -- until statement allowed at the end.
+  
 function return_statement(integer flags)
   if and_bits(flags, FUNC_FLAG) then
     return {RETURN, expr(1)}
@@ -1444,15 +1445,20 @@ function statements(integer mode, integer flags)
         prefix_idx = tok_idx
       
       case "until" then
-        if mode = LOOP then
+        if and_bits(flags,UNTIL_FLAG) then
           exit
+        else
+          tok = t
+          error("'until' must be inside a loop do construct")
+          tok = ""
         end if
         
        case "loop" then
        expect("do")
         s = {LOOP, 0}
-        s &= statements(LOOP, or_bits(flags, LOOP_FLAG))
+        s &= statements(LOOP, or_bits(flags, or_bits(UNTIL_FLAG,LOOP_FLAG)))
         s[2] = expr(1)
+        s[4] = idx
         expect("end")
         expect("loop")
         
