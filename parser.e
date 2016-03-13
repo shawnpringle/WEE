@@ -1454,13 +1454,26 @@ function statements(integer mode, integer flags)
         end if
         
        case "loop" then
-       expect("do")
+       if not OE4 then
+        tok = t
+        error("loop is a euphoria 4.0 construct.")
+        tok = ""
+      else
+        if token("label") then
+          if not token("\"") then
+            error("expected a label string")
+          elsif length(string_literal()) = 0 then
+            error("label string must not be empty")
+          end if
+        end if
+        expect("do")
         s = {LOOP, 0}
         s &= statements(LOOP, or_bits(flags, or_bits(UNTIL_FLAG,LOOP_FLAG)))
         s[2] = expr(1)
         s[4] = idx
         expect("end")
         expect("loop")
+       end if
         
         case "while" then          
         s = {WHILE, expr(1)}
