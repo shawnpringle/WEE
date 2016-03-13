@@ -173,8 +173,9 @@ global constant
   WITH = 316,
   WITHOUT = 317,
   SYNTAX_ERROR = 318, -- {SYNTAX_ERROR, pos, len, "message"}
-  LOOP = 319, -- {LOOP, expr, scope-start, scope-end, stmts...}
-  UNTIL = 320
+  LOOP = 319,     -- {LOOP, scope-start, scope-end, stmts...}
+  UNTIL = 320     -- {UNTIL, expr}
+
 
 -- keep a copy of parsed files, reparsing if timestamp changes
 sequence cache -- { {"path", timestamp, stmts...} ...}
@@ -350,10 +351,6 @@ procedure declare_ast(sequence ast, integer start_idx, integer scope_end, intege
       -- {WHILE, expr, scope-start, scope-end, stmts...}
       declare_ast(s, n+5, s[n+4])
       
-    elsif decl = LOOP then
-      -- {LOOP, expr, scope-start, scope-end, stmts... }
-      declare_ast(s, n+5, s[n+4])
-      
     elsif decl = IF then
       -- {IF, expr, {scope-start, scope-end, stmts...}, 
       --     [expr, {scope-start, scope-end, elsif-stmts...},]... 
@@ -378,6 +375,10 @@ procedure declare_ast(sequence ast, integer start_idx, integer scope_end, intege
       for i = n+6 to length(s) by 2 do
         declare_ast(s[i], 3, s[i][2])
       end for
+      
+    elsif decl = LOOP then
+      -- {LOOP, scope-start, scope-end, stmts...}
+      declare_ast(s, n+4, s[n+3])
 
     end if
   end for
@@ -1392,9 +1393,9 @@ constant
   PROC_FLAG = 1, -- return is allowed
   FUNC_FLAG = 2, -- return with expr is allowed
   LOOP_FLAG = 4, -- exit is allowed
-  CASE_FLAG = 8,  -- case statement allowed
-  UNTIL_FLAG = 16 -- until statement allowed at the end.
-  
+  CASE_FLAG = 8, -- case statement allowed
+  UNTIL_FLAG = 16 -- until statement is allowed
+
 function return_statement(integer flags)
   if and_bits(flags, FUNC_FLAG) then
     return {RETURN, expr(1)}
@@ -1443,39 +1444,8 @@ function statements(integer mode, integer flags)
       case "export" then
         prefix = EXPORT
         prefix_idx = tok_idx
-      
-      case "until" then
-        if and_bits(flags,UNTIL_FLAG) then
-          exit
-        else
-          tok = t
-          error("'until' must be inside a loop do construct")
-          tok = ""
-        end if
-        
-       case "loop" then
-       if not OE4 then
-        tok = t
-        error("loop is a euphoria 4.0 construct.")
-        tok = ""
-      else
-        if token("label") then
-          if not token("\"") then
-            error("expected a label string")
-          elsif length(string_literal()) = 0 then
-            error("label string must not be empty")
-          end if
-        end if
-        expect("do")
-        s = {LOOP, 0}
-        s &= statements(LOOP, or_bits(flags, or_bits(UNTIL_FLAG,LOOP_FLAG)))
-        s[2] = expr(1)
-        s[4] = idx
-        expect("end")
-        expect("loop")
-       end if
-        
-        case "while" then          
+              
+      case "while" then          
         s = {WHILE, expr(1)}
         if OE4 and token("with") then
           expect("entry")
@@ -1492,8 +1462,33 @@ function statements(integer mode, integer flags)
         expect("do")
         s &= statements(WHILE, or_bits(flags, LOOP_FLAG))
         expect("while")
+      
+      case "loop" then
+        if not OE4 then
+          goto "unknown_keyword"
+        end if
+        s = {LOOP}
+        if token("label") then
+          if token("\"") and length(string_literal()) then
+              -- optional label string
+          else
+              error("expected a label string")
+          end if
+        end if
+        expect("do")
+        s &= statements(LOOP, or_bits(flags, LOOP_FLAG + UNTIL_FLAG))
+        expect("loop")
+      
+      case "until" then
+        if not and_bits(flags, LOOP_FLAG + UNTIL_FLAG) = LOOP_FLAG + UNTIL_FLAG then
+          error("until must be inside a loop")
+        end if
+        s = {UNTIL, expr(1)}
 
       case "entry" then
+        if not and_bits(flags, LOOP_FLAG) then
+          error("entry must be inside a loop")
+        end if
         s = {ENTRY}
 
       case "label" then
@@ -1703,6 +1698,7 @@ function statements(integer mode, integer flags)
         s &= {expr(1)}
       
       case else
+      label  "unknown_keyword"
         tok = t
         if identifier() then
           if var_decl_ok then
@@ -2188,10 +2184,16 @@ function get_decls(sequence ast, integer pos, sequence name_space, integer filte
         result &= get_decls(s[7..$], pos, name_space, filter)
       end if
 
-    elsif decl = WHILE or decl = LOOP then
+    elsif decl = WHILE then
       -- {WHILE, expr, scope-start, scope-end, stmts...}
       if length(s) >= 4 and pos >= s[3] and pos <= s[4] then -- in scope?
         result &= get_decls(s[3..$], pos, name_space, filter)
+      end if
+
+    elsif decl = LOOP then
+      -- {LOOP, scope-start, scope-end, stmts...}
+      if length(s) >= 3 and pos >= s[2] and pos <= s[3] then -- in scope?
+        result &= get_decls(s[2..$], pos, name_space, filter)
       end if
 
     elsif decl = IF then
@@ -2435,10 +2437,19 @@ function decl_kind(sequence ast, integer start_idx, integer pos)
         end if
       end for
       
-    elsif decl = WHILE or decl = LOOP then
+    elsif decl = WHILE then
       -- {WHILE, expr, scope-start, scope-end, stmts...}
       if pos >= s[3] and pos <= s[4] then
         decl = decl_kind(s, 5, pos)
+        if decl then
+          return decl
+        end if
+      end if
+
+    elsif decl = LOOP then
+      -- {LOOP, scope-start, scope-end, stmts...}
+      if pos >= s[2] and pos <= s[3] then
+        decl = decl_kind(s, 4, pos)
         if decl then
           return decl
         end if
@@ -2843,11 +2854,15 @@ procedure check_ast(sequence ast, integer start_idx)
         check_expr(s[i][4])
       end for
       
-    elsif decl = WHILE or decl = LOOP then
+    elsif decl = WHILE then
       -- {WHILE, expr, scope-start, scope-end, stmts...}
       check_expr(s[n+2])
       check_ast(s, n+5)
       
+    elsif decl = LOOP then
+      -- {LOOP, scope-start, scope-end, stmts...}
+      check_ast(s, n+4)
+
     elsif decl = IF then
       -- {IF, expr, {scope-start, scope-end, stmts...}, 
       --     [expr, {scope-start, scope-end, elsif-stmts...},]... 
@@ -2910,7 +2925,7 @@ procedure check_ast(sequence ast, integer start_idx)
       end for
       check_expr(s[$])
       
-    elsif decl = QPRINT then
+    elsif decl = QPRINT or decl = UNTIL then
       check_expr(s[2])
 
     elsif decl = SYNTAX_ERROR then
